@@ -35,8 +35,8 @@ NUMBER_OF_THREADS is the threads to use per process (gpu), so optimally, it shou
 
 ## Testing
 
-- Testing using your trained model or our [pre-trained model](https://drive.google.com/file/d/1bFiXViR0Pah7dK_Sa7Kw_2-mPB04oxRk/view?usp=sharing) (voxel_size: 2cm):
-```sh tool/test.sh EXP_NAME /PATH/TO/CONFIG(copied one) NUMBER_OF_THREADS)```
+- Testing using your trained model or our [pre-trained model](https://drive.google.com/file/d/1bFiXViR0Pah7dK_Sa7Kw_2-mPB04oxRk/view?usp=sharing) (put the model weights in a model folder in `Exp/scannet/iccv_mink18_interlace/`):
+```sh tool/test.sh iccv_mink18_interlace Exp/scannet/iccv_mink18_interlace/3dunet_2cm_iccv_plabel.yaml 1)```
 
 
 

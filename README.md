@@ -1,8 +1,8 @@
 
 
-# MultiModal Interlaced Decoder
+# Multimodal Interlaced Decoder
 
-***CVPR 2021 (Oral)***
+***ICCV 23***
 
 
 ## Environment

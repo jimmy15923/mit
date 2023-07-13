@@ -16,6 +16,8 @@
 ## Prepare data
 
 - Download the dataset from official website.
+    - [ScanNet](https://github.com/ScanNet/ScanNet)
+    - [S3DIS](http://buildingparser.stanford.edu/dataset.html)
 
 - 3D: dataset/preprocess_3d_scannet.py
 

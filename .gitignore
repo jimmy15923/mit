@@ -1,0 +1,8 @@
+# temporary files
+*pycache*
+
+# log files
+*log
+
+# models
+*.pth.tar

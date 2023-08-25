@@ -1,6 +1,7 @@
 import argparse
 import os
 import shutil
+from tqdm import tqdm
 
 # will set argument
 parser = argparse.ArgumentParser(description='split ScanNet')
@@ -30,17 +31,18 @@ if not os.path.exists(dir_output):
 def copy_folder(name_split, list, dir_input, dir_output):
     print('load:', list)
     # create list folder
-    dir_train = os.path.join(dir_output, name_split)
-    if not os.path.exists(dir_train):
-        os.makedirs(os.path.join(dir_train))
+    dir_list = os.path.join(dir_output, name_split)
+    if not os.path.exists(dir_list):
+        os.makedirs(os.path.join(dir_list))
 
-    with open(list_train) as f:
-        for line in f:
+    with open(list) as f:
+        f_lines = f.readlines()
+        for line in tqdm(f_lines, bar_format='{l_bar}{bar:20}{r_bar}'):
             folder_to_copy = line.strip()
             dir_src = os.path.join(dir_input, folder_to_copy)
-            dir_dest = os.path.join(dir_train, folder_to_copy)
+            dir_dest = os.path.join(dir_list, folder_to_copy)
             shutil.copytree(dir_src, dir_dest)
-            print('copy', dir_src, 'to', dir_dest)
+            print('copy', dir_src, 'to', dir_dest, end='\r')
 
 copy_folder('train', list_train, dir_input, dir_output)
 copy_folder('val', list_val, dir_input, dir_output)

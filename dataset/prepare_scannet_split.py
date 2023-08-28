@@ -39,10 +39,19 @@ def copy_folder(name_split, list, dir_input, dir_output):
         f_lines = f.readlines()
         for line in tqdm(f_lines, bar_format='{l_bar}{bar:20}{r_bar}'):
             folder_to_copy = line.strip()
-            dir_src = os.path.join(dir_input, folder_to_copy)
-            dir_dest = os.path.join(dir_list, folder_to_copy)
-            shutil.copytree(dir_src, dir_dest)
-            print('copy', dir_src, 'to', dir_dest, end='\r')
+            # data
+            path_src = os.path.join(dir_input, folder_to_copy, folder_to_copy+'_vh_clean_2.ply')
+            path_dst = os.path.join(dir_list, folder_to_copy+'_vh_clean_2.ply')
+            # shutil.copytree(path_src, path_dst)
+            shutil.copy(path_src, path_dst)
+
+            # label
+            path_src = os.path.join(dir_input, folder_to_copy, folder_to_copy+'_vh_clean_2.labels.ply')
+            path_dst = os.path.join(dir_list, folder_to_copy+'_vh_clean_2.labels.ply')
+            # shutil.copytree(path_src, path_dst)
+            shutil.copy(path_src, path_dst)
+
+            print('copied', dir_list, folder_to_copy, end='\r')
 
 copy_folder('train', list_train, dir_input, dir_output)
 copy_folder('val', list_val, dir_input, dir_output)

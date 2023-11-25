@@ -1,0 +1,73 @@
+DATA:
+  data_name: scannet_cross
+  data_root: /home/jimmy15923/mnt/data/scannet/scannet_ssg
+  classes: 20
+  aug: False
+  train_split: train
+  voxelSize: 0.05
+
+ENCODER:
+  depth: 3
+  num_heads: 4
+  mlp_ratio: 1
+  drop_rate: 0.1
+  drop_path_rate: 0.1
+  attn_drop_rate: 0.1
+  is_pos: True
+  is_attn: False
+  is_pair_loss: True
+  learn_view_emb: True
+MODEL:
+  pool: avg
+TRAIN:
+  viewNum: 16
+  weight_2d: 0.1
+  arch: bpnet
+  cam_on_attn: False
+  layers_2d: 50
+  pretrained: True
+  arch_3d: MinkUNet18A
+  embed_dim: 96
+  sync_bn_2d: False
+  ignore_label: 255
+  train_gpu: [0,1,2,3,4,5,6,7]
+  workers: 32  # data loader workers
+  batch_size: 32  # batch size for training
+  batch_size_val: 16  # batch size for validation during training, memory and speed tradeoff
+  base_lr: 0.01
+  loop: 5
+  epochs: 1000
+  start_epoch: 0
+  power: 0.9
+  momentum: 0.9
+  weight_decay: 0.001
+  manual_seed: 3407
+  print_freq: 50
+  save_freq: 1
+  save_path:
+  weight:  # path to initial weight (default: none)
+  resume: 
+  evaluate: False  # evaluate on validation set, extra gpu memory needed and small batch_size_val is recommend
+  eval_freq: 100
+  alpha: 1
+#  zoom_factor: 8  # zoom factor for final prediction during training, be in [1, 2, 4, 8]
+#  train_h: 241
+#  train_w: 321
+
+Distributed:
+  dist_url: tcp://127.0.0.1:6787
+  dist_backend: 'nccl'
+  multiprocessing_distributed: True
+  world_size: 1
+  rank: 0
+
+
+TEST:
+  split: val  # split in [train, val and test]
+  val_benchmark: True
+  test_workers: 4
+  test_gpu: [0,1,2,3,4,5,6,7]
+  test_batch_size: 16
+  model_path:
+  save_folder:
+  test_repeats: 7

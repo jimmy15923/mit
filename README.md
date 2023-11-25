@@ -14,7 +14,7 @@ conda env create -f mit_env.yaml
 We implement our MIT by using MinkowskiEngine. Please follow the installation instruction from [their GitHub](https://github.com/NVIDIA/MinkowskiEngine#anaconda). We also utilize the third-party [point cloud process](https://github.com/072jiajia/point-cloud-lib) library from Ji-Jia Wu.
 
 ## Data Preparation
-Download the ScanNet [here](https://github.com/hkust-vgd/scanobjectnn).
+Download the ScanNet [here](https://github.com/ScanNet/ScanNet).
 
 - We follow [BPNet](https://github.com/wbhu/BPNet/tree/main/prepare_2d_data) to prepare the 2D and 3D data. 
 

@@ -3,6 +3,7 @@
 
 This repository is the implementation of our ICCV 2023 paper: **2D-3D Interlaced Transformer for Point Cloud Segmentation with Scene-Level Supervision**.
 
+[teaser](figure/MIT_teaser.png)
 
 ## Requirements
 Build the conda environment by
@@ -25,20 +26,6 @@ Download the ScanNet [here](https://github.com/hkust-vgd/scanobjectnn).
 Start training: `sh tool/train.sh $EXP_NAME$ $/PATH/TO/CONFIG$ $NUMBER_OF_THREADS$`
 ```bash
 sh tool/train.sh configs/ICCV23/config.yaml mit 8
-```
-
-## Test
-Run the trained model for inference
-
-```bash
-python test.py --config=work_dirs/raw/scanobj/chair.yaml 
-```
-
-## Visualization
-Run the command to genereate the GIF file in the README.md. Please note that only open3D with local monitor is supported.
-
-```bash
-python visualize.py
 ```
 
 ## Acknowledgment

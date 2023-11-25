@@ -1,76 +1,104 @@
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
-import models.resnet as models
+from torchvision import models
+
+from models.sem_transformer import TransformerEncoder
+from models.utils import MLP
+import timm
 
 
-class ResUnet(nn.Module):
-    def __init__(self, layers=18, classes=2, BatchNorm=nn.BatchNorm2d, pretrained=True):
-        super(ResUnet, self).__init__()
-        assert classes > 1
-        models.BatchNorm = BatchNorm
+class ResNet(nn.Module):
+    def __init__(
+        self,
+        cfg,
+        layers=18,
+        classes=2,
+        BatchNorm=nn.BatchNorm2d,
+    ):
+        super(ResNet, self).__init__()
+
         if layers == 18:
-            resnet = models.resnet18(pretrained=True, deep_base=False)
-            block = models.BasicBlock
-            layers = [2, 2, 2, 2]
+            self.resnet = models.resnet18(pretrained=cfg.pretrained)
         elif layers == 34:
-            resnet = models.resnet34(pretrained=True, deep_base=False)
-            block = models.BasicBlock
-            layers = [3, 4, 6, 3]
+            self.resnet = models.resnet34(pretrained=cfg.pretrained)
         elif layers == 50:
-            resnet = models.resnet50(pretrained=True, deep_base=False)
-            block = models.Bottleneck
-            layers = [3, 4, 6, 3]
-        self.layer0 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.maxpool)
-        self.layer1, self.layer2, self.layer3, self.layer4 = resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4
+            self.resnet = timm.create_model(
+                "resnetv2_50", pretrained=cfg.pretrained, num_classes=0
+            )
+        elif layers == 101:
+            self.resnet = timm.create_model(
+                "resnetv2_101", pretrained=cfg.pretrained, num_classes=0
+            )
 
-        # Decoder
-        # self.up4 = nn.Sequential(nn.ConvTranspose2d(512,256,kernel_size=2,stride=2),BatchNorm(256),nn.ReLU())
-        self.up4 = nn.Sequential(nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1), BatchNorm(256), nn.ReLU())
-        resnet.inplanes = 256 + 256
-        self.delayer4 = resnet._make_layer(block, 256, layers[-1])
-
-        self.up3 = nn.Sequential(nn.Conv2d(256, 128, kernel_size=3, stride=1, padding=1), BatchNorm(128), nn.ReLU())
-        resnet.inplanes = 128 + 128
-        self.delayer3 = resnet._make_layer(block, 128, layers[-2])
-
-        self.up2 = nn.Sequential(nn.Conv2d(128, 96, kernel_size=3, stride=1, padding=1), BatchNorm(96), nn.ReLU())
-        resnet.inplanes = 96 + 64
-        self.delayer2 = resnet._make_layer(block, 96, layers[-3])
-
-        self.cls = nn.Sequential(
-            nn.Conv2d(96, 256, kernel_size=3, padding=1, bias=False),
-            BatchNorm(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, classes, kernel_size=1)
-        )
-        if self.training:
-            self.aux = nn.Sequential(nn.Conv2d(256, 256, kernel_size=1, bias=False),
-                                     BatchNorm(256), nn.ReLU(inplace=True),
-                                     nn.Conv2d(256, classes, kernel_size=1))
+        # Parameters of newly constructed modules have requires_grad=True by default
+        self.fc = nn.Linear(2048, cfg.embed_dim)
 
     def forward(self, x):
-        _, _, h, w = x.shape
-        x = self.layer0(x)  # 1/4
-        x2 = self.layer1(x)  # 1/4
-        x3 = self.layer2(x2)  # 1/8
-        x4 = self.layer3(x3)  # 1/16
-        x5 = self.layer4(x4)  # 1/32
-        p4 = self.up4(F.interpolate(x5, x4.shape[-2:], mode='bilinear', align_corners=True))
-        p4 = torch.cat([p4, x4], dim=1)
-        p4 = self.delayer4(p4)
-        p3 = self.up3(F.interpolate(p4, x3.shape[-2:], mode='bilinear', align_corners=True))
-        p3 = torch.cat([p3, x3], dim=1)
-        p3 = self.delayer3(p3)
-        p2 = self.up2(F.interpolate(p3, x2.shape[-2:], mode='bilinear', align_corners=True))
-        p2 = torch.cat([p2, x2], dim=1)
-        p2 = self.delayer2(p2)
-        x = self.cls(p2)
-        x = F.interpolate(x, size=(h, w), mode='bilinear', align_corners=True)
-        if self.training:
-            aux = self.aux(x4)
-            aux = F.interpolate(aux, size=(h, w), mode='bilinear', align_corners=True)
-            return x, aux
+        return self.fc(self.resnet(x))
+
+
+class MctResNet(ResNet):
+    def __init__(self, cfg, layers):
+        ResNet.__init__(self, cfg, layers)
+        self.is_attn = cfg.use_attn
+        if cfg.use_attn:
+            self.encoder = TransformerEncoder(
+                embed_dim=cfg.embed_dim,
+                depth=3,
+                num_heads=4,
+                mlp_ratio=1,
+                drop_rate=0.0,
+                attn_drop_rate=0.0,
+                drop_path_rate=0.1,
+            )
+            self.pos_emb_3d = MLP(3, cfg.embed_dim, cfg.embed_dim, num_layers=2)
+            self.cls_token = nn.Parameter(torch.zeros(1, 20, cfg.embed_dim))
+            self.cls_pos_emb = nn.Parameter(torch.zeros(1, 20, cfg.embed_dim))
+
+        self.head = nn.Conv1d(cfg.embed_dim, 20, kernel_size=1)
+
+
+    def forward(self, images, poses):
+        batch, channel, height, width, n_view = images.size()
+
+        data_2d = images.permute(0, 4, 1, 2, 3).contiguous()  # -> BVCHW
+        data_2d = data_2d.view(batch * n_view, *data_2d.shape[2:])
+
+        image_tokens = self.fc(self.resnet(data_2d))
+        raw_image_tokens = image_tokens.view(batch, n_view, -1)  # (B, N ,C)
+        cls_attn_maps = []
+        if self.is_attn:
+            cls_tokens = self.cls_token.expand(batch, -1, -1)
+            poses = poses.permute(0, 2, 1).contiguous()  # -> BVC
+            poses = poses.view(batch * n_view, 3)
+            pos_emb = self.pos_emb_3d(poses.float())
+
+            pos_emb = pos_emb.view(batch, n_view, -1)
+
+            cls_pos_emb = self.cls_pos_emb.expand(batch, -1, -1)
+            pos_emb = torch.cat((cls_pos_emb, pos_emb), dim=1)
+
+            image_tokens = torch.cat(
+                (cls_tokens, raw_image_tokens), dim=1
+            )  # (B, N+20 ,C)
+            image_tokens, attn_weights = self.encoder(image_tokens + pos_emb)
+            cls_tokens = image_tokens[:, :20, :]
+            scene_mct_logits = cls_tokens.mean(-1)
+            cls_attn_maps.append(attn_weights)
+
+            cams = self.head(image_tokens.permute(0, 2, 1)[:, :, 20:])
         else:
-            return x
+            scene_mct_logits = None
+            cams = self.head(raw_image_tokens.permute(0, 2, 1))
+
+        scene_logits = torch.mean(cams, 2)
+
+        output = {
+            "scene_logits": scene_logits,
+            "scene_mct_logits": scene_mct_logits,
+            "cams": cams,
+        }
+
+        return output

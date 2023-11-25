@@ -1,3 +1,4 @@
+
 import os
 import random
 import numpy as np
@@ -95,11 +96,11 @@ def main():
     # Following code is for caching dataset into memory
     if args.data_name == 'scannet_3d_mink':
         from dataset.scanNet3D import ScanNet3D, collation_fn_eval_all
-        _ = ScanNet3D(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split=args.split, aug=False,
+        _ = ScanNet3D(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split='val', aug=False,
                       memCacheInit=True, eval_all=True, identifier=6797)
     elif args.data_name == 'scannet_cross':
         from dataset.scanNetCross import ScanNetCross, collation_fn, collation_fn_eval_all
-        _ = ScanNetCross(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split=args.split, aug=False,
+        _ = ScanNetCross(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split='val', aug=False,
                          memCacheInit=True, eval_all=True, identifier=6797, val_benchmark=args.val_benchmark)
 
     if args.multiprocessing_distributed:
@@ -150,7 +151,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     # ####################### Data Loader ####################### #
     if args.data_name == 'scannet_3d_mink':
         from dataset.scanNet3D import ScanNet3D, collation_fn_eval_all
-        val_data = ScanNet3D(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split=args.split, aug=False,
+        val_data = ScanNet3D(dataPathPrefix=args.data_root, voxelSize=args.voxelSize, split='val', aug=False,
                              memCacheInit=True, eval_all=True, identifier=6797)
         val_sampler = None
         val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.test_batch_size,
@@ -163,7 +164,7 @@ def main_worker(gpu, ngpus_per_node, argss):
                                 memCacheInit=True, eval_all=True, identifier=6797, val_benchmark=args.val_benchmark)
         val_sampler = None
         val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.test_batch_size,
-                                                 shuffle=False, num_workers=args.test_workers, pin_memory=True,
+                                                 shuffle=True, num_workers=args.test_workers, pin_memory=True,
                                                  drop_last=False, collate_fn=collation_fn_eval_all,
                                                  sampler=val_sampler)
     else:
@@ -175,7 +176,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     elif args.data_name == 'scannet_cross':
         test_cross_3d(model, val_loader)
 
-        
+
 def validate(model, val_loader):
     torch.backends.cudnn.enabled = False  # for cudnn bug at https://github.com/pytorch/pytorch/issues/4107
     model.eval()
@@ -185,7 +186,7 @@ def validate(model, val_loader):
             preds = []
             gts = []
             for i, (coords, feat, label, inds_reverse) in enumerate(tqdm(val_loader)):
-                sinput = SparseTensor(feat.cuda(non_blocking=True), coords.cuda(non_blocking=True))
+                sinput = SparseTensor(feat.cuda(non_blocking=True), coords)
                 predictions = model(sinput)
                 predictions_enlarge = predictions[inds_reverse, :]
                 if args.multiprocessing_distributed:
@@ -200,93 +201,8 @@ def validate(model, val_loader):
             store = pred + store
             accumu_iou = iou.evaluate(store.max(1)[1].numpy(), gt.numpy())
             if main_process():
-                print(accumu_iou)
-                np.save(join(args.save_folder, 'pred.npy'), store.max(1)[1].numpy())        
-        
-        
-# def validate(model, val_loader):
-#     torch.backends.cudnn.enabled = False  # for cudnn bug at https://github.com/pytorch/pytorch/issues/4107
-#     model.eval()
-#     intersection_meter_3d = AverageMeter()
-#     union_meter_3d = AverageMeter()
-#     with torch.no_grad():
-#         store = 0.0
-#         for rep_i in range(args.test_repeats):
-#             preds = []
-#             gts = []
-#             for i, (coords, feat, label, inds_reverse) in enumerate(tqdm(val_loader)):
-#                 scene_name = os.path.basename(val_loader.dataset.data_paths[i])
-#                 scene_name = scene_name.replace('_vh_clean_2', '')
+                np.save(join(args.save_folder, 'pred.npy'), store.max(1)[1].numpy())
 
-#                 raw_coords, raw_feat, _, _ = torch.load(f"/home/jimmy15923/mnt/data/scannet/scannet_ssg/trainval//{scene_name}")
-
-
-#                 sinput = SparseTensor(feat.cuda(non_blocking=True), coords.cuda(non_blocking=True))
-#                 predictions = model(sinput)
-#                 predictions_enlarge = predictions[inds_reverse, :]
-#                 if args.multiprocessing_distributed:
-#                     dist.all_reduce(predictions_enlarge)
-# #                 preds.append(predictions_enlarge.detach_().cpu())
-# #                 gts.append(label.cpu())
-
-#                 intersection, union, target = intersectionAndUnionGPU(
-#                         predictions_enlarge.max(1)[1], label.cuda(), 20, 255
-#                 )  
-#                 intersection_meter_3d.update(intersection)
-#                 union_meter_3d.update(union)
-#                 ious = (intersection_meter_3d.val / (union_meter_3d.val + 1e-10))
-                
-#                 torch.save((raw_coords, raw_feat, predictions_enlarge.max(1)[1].cpu().numpy()),
-#                 f'//home/jimmy15923/mnt/data/scannet/cvpr_ours_retrain/trainval/{scene_name}') 
-                
-# #             gt = torch.cat(gts)
-# #             pred = torch.cat(preds)
-# #             current_iou = iou.evaluate(pred.max(1)[1].numpy(), gt.numpy())
-# #             if rep_i == 0 and main_process():
-# #                 np.save(join(args.save_folder, 'gt.npy'), gt.numpy())
-# #             store = pred + store
-# #             accumu_iou = iou.evaluate(store.max(1)[1].numpy(), gt.numpy())
-#             if main_process():
-#                 print((intersection_meter_3d.sum / (union_meter_3d.sum + 1e-10)))
-#                 print((intersection_meter_3d.sum / (union_meter_3d.sum + 1e-10)).mean())
-# #                 np.save(join(args.save_folder, 'pred.npy'), store.max(1)[1].numpy())
-        
-        
-# def validate(model, val_loader):
-#     torch.backends.cudnn.enabled = False  # for cudnn bug at https://github.com/pytorch/pytorch/issues/4107
-#     model.eval()
-#     with torch.no_grad():
-#         store = 0.0
-#         for rep_i in range(args.test_repeats):
-#             preds = []
-#             gts = []
-#             for i, (coords, feat, label, inds_reverse) in enumerate(tqdm(val_loader)):
-#                 scene_name = os.path.basename(val_loader.dataset.data_paths[i])
-#                 scene_name = scene_name.replace('_vh_clean_2', '')
-
-# #                 raw_coords, raw_feat, _, _ = torch.load(f"/home/jimmy15923/mnt/data/scannet/scannet_ssg/trainval/{scene_name}")
-            
-#                 sinput = SparseTensor(feat.cuda(non_blocking=True), coords.cuda(non_blocking=True))
-#                 predictions = model(sinput)
-#                 predictions_enlarge = predictions[inds_reverse, :]
-#                 if args.multiprocessing_distributed:
-#                     dist.all_reduce(predictions_enlarge)
-#                 preds.append(predictions_enlarge.detach_().cpu())
-#                 gts.append(label.cpu())
-# #                 torch.save((raw_coords, raw_feat, predictions_enlarge.detach_().cpu().numpy()), 
-# #                    f'/home/jimmy15923/mnt/data/scannet/unet_result/{scene_name}', 
-# #                       _use_new_zipfile_serialization=False) 
-               
-#             gt = torch.cat(gts)
-#             pred = torch.cat(preds)
-#             current_iou = iou.evaluate(pred.max(1)[1].numpy(), gt.numpy())
-#             if rep_i == 0 and main_process():
-#                 np.save(join(args.save_folder, 'gt.npy'), gt.numpy())
-#             store = pred + store
-#             accumu_iou = iou.evaluate(store.max(1)[1].numpy(), gt.numpy())
-#             if main_process():
-#                 print(accumu_iou)
-#                 np.save(join(args.save_folder, 'pred.npy'), store.max(1)[1].numpy())
 
 def test_cross_3d(model, val_data_loader):
     torch.backends.cudnn.enabled = False  # for cudnn bug at https://github.com/pytorch/pytorch/issues/4107
@@ -305,12 +221,12 @@ def test_cross_3d(model, val_data_loader):
             for i, (coords, feat, label_3d, color, label_2d, link, inds_reverse) in enumerate(val_data_loader):
                 if main_process():
                     pbar.update(1)
-                sinput = SparseTensor(feat.cuda(non_blocking=True), coords.cuda(non_blocking=True))
+                sinput = SparseTensor(feat.cuda(non_blocking=True), coords)
                 color, link = color.cuda(non_blocking=True), link.cuda(non_blocking=True)
                 label_3d, label_2d = label_3d.cuda(non_blocking=True), label_2d.cuda(non_blocking=True)
                 output_3d, output_2d = model(sinput, color, link)
                 output_2d = output_2d.contiguous()
-                output_3d = output_3d[inds_reverse, :]
+#                 output_3d = output_3d[inds_reverse, :]
                 if args.multiprocessing_distributed:
                     dist.all_reduce(output_3d)
                     dist.all_reduce(output_2d)
@@ -323,6 +239,10 @@ def test_cross_3d(model, val_data_loader):
 
                 preds.append(output_3d.detach_().cpu())
                 gts.append(label_3d.cpu())
+                
+                
+                torch.save((coords, feat, label_3d, color, label_2d, output_2d, output_3d), join(args.save_folder, 'prediction_2.pth'))
+                break
             if main_process():
                 pbar.close()
             gt = torch.cat(gts)
@@ -340,7 +260,6 @@ def test_cross_3d(model, val_data_loader):
             # allAcc = sum(intersection_meter.sum) / (sum(target_meter.sum) + 1e-10)
             if main_process():
                 print("2D: ", mIoU_2d, ", 3D: ", mIou_3d)
-
 
 if __name__ == '__main__':
     main()

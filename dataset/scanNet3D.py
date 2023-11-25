@@ -12,13 +12,15 @@ ________________________,--._(___Y___)_,--._______________________
                         `--'           `--'
 """
 
-import torch.utils.data as data
-import torch
-import numpy as np
-from os.path import join, exists
-from glob import glob
 import multiprocessing as mp
+from glob import glob
+from os.path import exists, join
+
+import numpy as np
 import SharedArray as SA
+import torch
+import torch.utils.data as data
+
 import dataset.augmentation as t
 from dataset.voxelizer import Voxelizer
 
@@ -36,12 +38,11 @@ def collation_fn(batch):
     :return:   coords_batch: N x 4 (x,y,z,batch)
 
     """
-    coords, feats, labels = list(zip(*batch))
-
+    coords, feats, labels, segs = list(zip(*batch))
     for i in range(len(coords)):
         coords[i][:, 0] *= i
 
-    return torch.cat(coords), torch.cat(feats), torch.cat(labels)
+    return torch.cat(coords), torch.cat(feats), labels, segs
 
 
 def collation_fn_eval_all(batch):
@@ -50,7 +51,7 @@ def collation_fn_eval_all(batch):
     :return:   coords_batch: N x 4 (x,y,z,batch)
 
     """
-    coords, feats, labels, inds_recons = list(zip(*batch))
+    coords, feats, labels, segs, inds_recons, raw_coords, raw_feats = list(zip(*batch))
     inds_recons = list(inds_recons)
     # pdb.set_trace()
 
@@ -60,8 +61,7 @@ def collation_fn_eval_all(batch):
         inds_recons[i] = accmulate_points_num + inds_recons[i]
         accmulate_points_num += coords[i].shape[0]
 
-    return torch.cat(coords), torch.cat(feats), torch.cat(labels), torch.cat(inds_recons)
-
+    return torch.cat(coords), torch.cat(feats), labels, segs, torch.cat(inds_recons), torch.cat(raw_coords), torch.cat(raw_feats)
 
 class ScanNet3D(data.Dataset):
     # Augmentation arguments
@@ -83,6 +83,7 @@ class ScanNet3D(data.Dataset):
         self.split = split
         self.identifier = identifier
         self.data_paths = sorted(glob(join(dataPathPrefix, split, '*.pth')))
+
         self.voxelSize = voxelSize
         self.aug = aug
         self.loop = loop
@@ -110,9 +111,10 @@ class ScanNet3D(data.Dataset):
 
         if memCacheInit and (not exists("/dev/shm/wbhu_scannet_3d_%s_%06d_locs_%08d" % (split, identifier, 0))):
             print('[*] Starting shared memory init ...')
-            for i, (locs, feats, labels) in enumerate(torch.utils.data.DataLoader(
+            for i, (locs, feats, labels, segs) in enumerate(torch.utils.data.DataLoader(
                     self.data_paths, collate_fn=lambda x: torch.load(x[0]),
                     num_workers=min(8, mp.cpu_count()), shuffle=False)):
+
                 labels[labels == -100] = 255
                 labels = labels.astype(np.uint8)
                 # Scale color to 0-255
@@ -120,6 +122,8 @@ class ScanNet3D(data.Dataset):
                 sa_create("shm://wbhu_scannet_3d_%s_%06d_locs_%08d" % (split, identifier, i), locs)
                 sa_create("shm://wbhu_scannet_3d_%s_%06d_feats_%08d" % (split, identifier, i), feats)
                 sa_create("shm://wbhu_scannet_3d_%s_%06d_labels_%08d" % (split, identifier, i), labels)
+                sa_create("shm://wbhu_scannet_3d_%s_%06d_segs_%08d" % (split, identifier, i), segs)
+
 
         print('[*] %s (%s) loading done (%d)! ' % (dataPathPrefix, split, len(self.data_paths)))
 
@@ -128,28 +132,37 @@ class ScanNet3D(data.Dataset):
         locs_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_locs_%08d" % (self.split, self.identifier, index)).copy()
         feats_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_feats_%08d" % (self.split, self.identifier, index)).copy()
         labels_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_labels_%08d" % (self.split, self.identifier, index)).copy()
+        segs_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_segs_%08d" % (self.split, self.identifier, index)).copy()
 
         locs = self.prevoxel_transforms(locs_in) if self.aug else locs_in
-        locs, feats, labels, inds_reconstruct = self.voxelizer.voxelize(locs, feats_in, labels_in)
+        locs, feats, labels, segs, inds_reconstruct = self.voxelizer.voxelize(locs, feats_in, labels_in, segs_in)
+
         if self.eval_all:
             labels = labels_in
+            raw_coords = torch.from_numpy(locs_in)
+            raw_feats = torch.from_numpy(feats_in).float() / 127.5 - 1.
+            inds_reconstruct = torch.from_numpy(inds_reconstruct).long()
         if self.aug:
-            locs, feats, labels = self.input_transforms(locs, feats, labels)
+            locs, feats, labels, segs = self.input_transforms(locs, feats, labels, segs)
+
         coords = torch.from_numpy(locs).int()
         coords = torch.cat((torch.ones(coords.shape[0], 1, dtype=torch.int), coords), dim=1)
         feats = torch.from_numpy(feats).float() / 127.5 - 1.
         labels = torch.from_numpy(labels).long()
+        segs = torch.from_numpy(segs).long()
 
         if self.eval_all:
-            return coords, feats, labels, torch.from_numpy(inds_reconstruct).long()
-        return coords, feats, labels
+            return coords, feats, labels, segs, inds_reconstruct, raw_coords, raw_feats
+        return coords, feats, labels, segs
 
     def __len__(self):
         return len(self.data_paths) * self.loop
 
 
 if __name__ == '__main__':
-    import time, random
+    import random
+    import time
+
     from tensorboardX import SummaryWriter
 
     data_root = '/research/dept6/wbhu/Dataset/ScanNet'

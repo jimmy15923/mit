@@ -22,8 +22,41 @@
 # Networks", CVPR'19 (https://arxiv.org/abs/1904.08755) if you use any part
 # of the code.
 import MinkowskiEngine as ME
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from MinkowskiEngine.modules.resnet_block import BasicBlock, Bottleneck
+from timm.models.layers import trunc_normal_, Mlp
+from torch import nn
+from torch.autograd import Variable
+
+from models.avggroup import avg_grouping
 from models.resnet_mink import ResNetBase
+# from models.transformer import TransformerEncoder, TransformerEncoderLayer
+from models.sem_transformer import TransformerEncoder
+from models.utils import MLP, min_max_norm
+
+
+def soft_crossentropy(input, target):
+    logprobs = torch.nn.functional.log_softmax(input, dim=1)
+    return  -(target * logprobs).sum() / input.shape[0]
+
+
+def c2_xavier_fill(module: nn.Module) -> None:
+    """
+    Initialize `module.weight` using the "XavierFill" implemented in Caffe2.
+    Also initializes `module.bias` to 0.
+    Args:
+        module (torch.nn.Module): module to initialize.
+    """
+    # Caffe2 implementation of XavierFill in fact
+    # corresponds to kaiming_uniform_ in PyTorch
+    nn.init.kaiming_uniform_(module.weight, a=1)
+    if module.bias is not None:
+        # pyre-fixme[6]: Expected `Tensor` for 1st param but got `Union[nn.Module,
+        #  torch.Tensor]`.
+        nn.init.constant_(module.bias, 0)
 
 
 class MinkUNetBase(ResNetBase):
@@ -37,17 +70,20 @@ class MinkUNetBase(ResNetBase):
     # To use the model, must call initialize_coords before forward pass.
     # Once data is processed, call clear to reset the model before calling
     # initialize_coords
-    def __init__(self, in_channels, out_channels, D=3):
-        ResNetBase.__init__(self, in_channels, out_channels, D)
+    def __init__(self, in_channels, out_channels, cfg, D, is_cls, *args, **kwargs):
+        ResNetBase.__init__(self, in_channels, out_channels, cfg, D, is_cls)
+        self.is_extract_feature = is_cls
+        self.is_cls = is_cls
+        self.cfg = cfg
 
-    def network_initialization(self, in_channels, out_channels, D):
+    def network_initialization(self, in_channels, out_channels, D=3):
         # Output of the first conv concated to conv6
+        self.num_classes = self.cfg.classes
         self.inplanes = self.INIT_DIM
         self.conv0p1s1 = ME.MinkowskiConvolution(
             in_channels, self.inplanes, kernel_size=5, dimension=D)
 
         self.bn0 = ME.MinkowskiBatchNorm(self.inplanes)
-
         self.conv1p1s2 = ME.MinkowskiConvolution(
             self.inplanes, self.inplanes, kernel_size=2, stride=2, dimension=D)
         self.bn1 = ME.MinkowskiBatchNorm(self.inplanes)
@@ -104,15 +140,39 @@ class MinkUNetBase(ResNetBase):
         self.block8 = self._make_layer(self.BLOCK, self.PLANES[7],
                                        self.LAYERS[7])
 
-        self.final = ME.MinkowskiConvolution(
-            self.PLANES[7],
-            out_channels,
-            kernel_size=1,
-            bias=True,
-            dimension=D)
-        self.relu = ME.MinkowskiReLU(inplace=True)
+        # self.final = ME.MinkowskiConvolution(
+        #     self.PLANES[7],
+        #     self.embed_dim,
+        #     kernel_size=1,
+        #     bias=True,
+        #     dimension=D)
 
-    def forward(self, x):
+        # if self.is_cls:
+            # if self.is_attn:
+        if not self.is_cls:
+            if self.cfg.pos_emb:
+                self.coord_emb = Mlp(3, self.PLANES[7], self.PLANES[7])
+                self.cls_pos_emb =  nn.Parameter(torch.zeros(self.num_classes, self.PLANES[7]))
+                trunc_normal_(self.cls_pos_emb, std=0.02)
+
+            if self.cfg.encoder:
+                self.cls_token = nn.Parameter(torch.zeros(self.num_classes, self.PLANES[7]))
+                trunc_normal_(self.cls_token, std=0.02)
+
+                self.encoder = TransformerEncoder(
+                    embed_dim=self.PLANES[7],
+                    depth=self.cfg.depth,
+                    num_heads=self.cfg.num_heads,
+                    mlp_ratio=self.cfg.mlp_ratio,
+                    drop_rate=self.cfg.drop_rate,
+                    attn_drop_rate=self.cfg.attn_drop_rate,
+                    drop_path_rate=self.cfg.drop_path_rate,
+                )
+            self.head = nn.Conv1d(self.PLANES[7], self.num_classes, kernel_size=1)
+        self.relu = ME.MinkowskiReLU(inplace=True)
+        # self.pool = ME.MinkowskiAvgPooling(kernel_size=3, stride=3, dimension=D)
+
+    def forward(self, x, overseg=None, debug=False):
         out = self.conv0p1s1(x)
         out = self.bn0(out)
         out_p1 = self.relu(out)
@@ -166,11 +226,104 @@ class MinkUNetBase(ResNetBase):
         out = self.convtr7p2s2(out)
         out = self.bntr7(out)
         out = self.relu(out)
-
         out = ME.cat(out, out_p1)
-        out = self.block8(out)
+        point_tensor = self.block8(out)
+        # out = self.final(out)
 
-        return self.final(out).F
+        if self.is_cls:
+            return point_tensor
+
+        cls_logits = []
+        cls_mct_logits = []
+        cams = []
+        consistent_loss = []
+        cls_attn_maps = []
+        for batch_idx in range(len(point_tensor.C[:, 0].unique())):
+            mask_i = (point_tensor.C[:, 0] == batch_idx)
+            point_feat = point_tensor.F[mask_i]
+            point_coord = point_tensor.C[mask_i][:, 1:].float()
+
+            if self.cfg.overseg_pool:
+                # overseg_idx = rearange_consecutive_label(overseg[batch_idx])
+                overseg_idx = overseg[batch_idx]
+                if self.cfg.overseg_maxpool:
+                    pooled_feat = max_grouping(point_feat.contiguous(), overseg_idx)
+                    pooled_coord = max_grouping(point_coord.contiguous(), overseg_idx) 
+                else:
+                    # pooled_feat = avg_grouping(point_feat.contiguous(), overseg_idx)
+                    # pooled_coord = avg_grouping(point_coord.contiguous(), overseg_idx)
+                    pooled_feat = avg_grouping(point_feat.contiguous(), overseg_idx)
+                    pooled_coord = avg_grouping(point_coord.contiguous(), overseg_idx)
+                    pooled_feat = torch.where(torch.isnan(pooled_feat), torch.zeros_like(pooled_feat), pooled_feat)
+                    pooled_coord = torch.where(torch.isnan(pooled_coord), torch.zeros_like(pooled_coord), pooled_coord)
+
+                if self.cfg.feat_smooth:
+                    mean_target = pooled_feat[overseg_idx]
+                    consistent_loss.append(F.mse_loss(point_feat, mean_target))
+
+                last_feature = pooled_feat.unsqueeze(0).permute(0, 2, 1)
+            else:
+                last_feature = point_feat.unsqueeze(0).permute(0, 2, 1)
+
+            cam = self.head(last_feature)  # (1, C, N)
+            cam = cam.softmax(1)
+
+            if self.cfg.pool == 'avg':
+                cls_logits.append(torch.mean(cam, dim=2))
+            else:
+                cls_logits.append(F.adaptive_max_pool1d(cam, output_size=(1)).squeeze(-1))  
+
+            if self.cfg.encoder:
+                voxel_token = torch.cat((self.cls_token, pooled_feat))
+
+            if self.cfg.pos_emb:
+                pos = self.coord_emb(pooled_coord)  # NxD
+                pos = torch.cat((self.cls_pos_emb, pos))
+                voxel_token = voxel_token + pos
+            
+            if self.cfg.encoder:        
+                # voxel_tokens.append(voxel_token)
+                voxel_token, attn_weights = self.encoder(voxel_token.unsqueeze(0))
+                cls_attn_maps.append(attn_weights)
+
+                cls_tokens = voxel_token[0, :self.num_classes] # 20 x D
+                cls_mct_logits.append(cls_tokens.mean(-1).unsqueeze(0))
+                # if self.cfg.cls_on_attn:
+                #     cam = self.head(voxel_token[0, 20:].unsqueeze(0).permute(0, 2, 1))
+                #     if self.cfg.pool == 'avg':
+                #         cls_logits.append(torch.mean(cam, dim=2))
+                #     else:
+                #         cls_logits.append(F.adaptive_max_pool1d(cam, output_size=(1)).squeeze(-1))  
+
+            # if self.cfg.encoder:
+            #     attn_weights = torch.stack(attn_weights)  # 12 * B * H * N * N
+            #     attn_weights = torch.mean(attn_weights, dim=2)
+            #     mtatt = attn_weights[-3:].sum(0)[:, 0:20, 20:]  # (1, C, N)
+            #     mct_cam = mtatt * F.relu(cam)
+
+            if self.cfg.overseg_pool and self.cfg.encoder:
+                cams.append(cam[0].permute(1, 0))
+            elif self.cfg.overseg_pool:
+                cams.append(cam[0].permute(1, 0))
+            else:
+                cams.append(cam[0].permute(1, 0))
+
+        if len(cls_mct_logits):
+            cls_mct_logits = torch.cat(cls_mct_logits)
+        
+        if len(consistent_loss):
+            consistent_loss = torch.mean(torch.stack(consistent_loss)) 
+        else:
+            consistent_loss = torch.zeros(1)[0].cuda()
+
+        output = {
+            'cls_logits': torch.cat(cls_logits),
+            'cls_mct_logits': cls_mct_logits,
+            'smooth_loss': consistent_loss,
+            'attn_maps': cls_attn_maps,
+            'cams': cams,
+        }
+        return output
 
 
 class MinkUNet14(MinkUNetBase):
@@ -198,6 +351,18 @@ class MinkUNet101(MinkUNetBase):
     LAYERS = (2, 3, 4, 23, 2, 2, 2, 2)
 
 
+class MinkResNet18(MinkUNet18):
+    PLANES = (32, 64, 128, 256, 128, 128, 96, 96)
+
+
+class MinkResNet34(MinkUNet34):
+    PLANES = (32, 64, 128, 256, 128, 128, 96, 96)
+
+
+class MinkResNet50(MinkUNet50):
+    PLANES = (32, 64, 128, 256, 128, 128, 96, 96)
+
+
 class MinkUNet14A(MinkUNet14):
     PLANES = (32, 64, 128, 256, 128, 128, 96, 96)
 
@@ -222,6 +387,10 @@ class MinkUNet18B(MinkUNet18):
     PLANES = (32, 64, 128, 256, 128, 128, 128, 128)
 
 
+class MinkUNet18C(MinkUNet18):
+    PLANES = (32, 64, 128, 256, 256, 256, 256, 256)
+
+
 class MinkUNet18D(MinkUNet18):
     PLANES = (32, 64, 128, 256, 384, 384, 384, 384)
 
@@ -238,26 +407,34 @@ class MinkUNet34C(MinkUNet34):
     PLANES = (32, 64, 128, 256, 256, 128, 96, 96)
 
 
-def mink_unet(in_channels=3, out_channels=20, D=3, arch='MinkUNet18A'):
+class MinkUNet34D(MinkUNet34):
+    PLANES = (32, 64, 128, 256, 384, 384, 384, 384)
+
+
+def mink_unet(in_channels=3, out_channels=20, cfg=None, D=3, is_cls=False, arch='MinkUNet18A'):
     if arch == 'MinkUNet18A':
-        return MinkUNet18A(in_channels, out_channels, D)
+        return MinkUNet18A(in_channels, out_channels, cfg, D, is_cls, arch)
     elif arch == 'MinkUNet18B':
-        return MinkUNet18B(in_channels, out_channels, D)
+        return MinkUNet18B(in_channels, out_channels, D, is_cls)
+    elif arch == 'MinkUNet50':
+        return MinkUNet50(in_channels, out_channels, D, is_cls)
     elif arch == 'MinkUNet18D':
-        return MinkUNet18D(in_channels, out_channels, D)
+        return MinkUNet18D(in_channels, out_channels, D, is_cls)
     elif arch == 'MinkUNet34A':
-        return MinkUNet34A(in_channels, out_channels, D)
+        return MinkUNet34A(in_channels, out_channels, D, is_cls)
     elif arch == 'MinkUNet34B':
-        return MinkUNet34B(in_channels, out_channels, D)
+        return MinkUNet34B(in_channels, out_channels, D, is_cls)
     elif arch == 'MinkUNet34C':
-        return MinkUNet34C(in_channels, out_channels, D)
+        return MinkUNet34C(in_channels, out_channels, cfg, D, is_cls, arch)
+    elif arch == 'MinkUNet34D':
+        return MinkUNet34D(in_channels, out_channels, D, is_cls)        
     elif arch == 'MinkUNet14A':
-        return MinkUNet14A(in_channels, out_channels, D)
+        return MinkUNet14A(in_channels, out_channels, D, is_cls)
     elif arch == 'MinkUNet14B':
-        return MinkUNet14B(in_channels, out_channels, D)
+        return MinkUNet14B(in_channels, out_channels, D, is_cls)
     elif arch == 'MinkUNet14C':
-        return MinkUNet14C(in_channels, out_channels, D)
+        return MinkUNet14C(in_channels, out_channels, D, is_cls)
     elif arch == 'MinkUNet14D':
-        return MinkUNet14D(in_channels, out_channels, D)
+        return MinkUNet14D(in_channels, out_channels, D, is_cls)
     else:
         raise Exception('architecture not supported yet'.format(arch))

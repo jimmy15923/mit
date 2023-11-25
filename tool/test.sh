@@ -33,19 +33,19 @@ mkdir -p ${result_dir}/last
 mkdir -p ${result_dir}/best
 
 export PYTHONPATH=.
-rm -rf /dev/shm/wbhu*
+#rm -rf /dev/shm/wbhu*
 echo $OMP_NUM_THREADS | tee -a ${exp_dir}/test_last-$now.log
 nvidia-smi | tee -a ${exp_dir}/test_last-$now.log
 which pip | tee -a ${exp_dir}/test_last-$now.log
 
-# TEST
-#rm -rf /dev/shm/wbhu*
-now=$(date +"%Y%m%d_%H%M%S")
-#$PYTHON -u ${exp_dir}/${TEST_CODE} \
-#  --config=${config} \
-#  save_folder ${result_dir}/last \
-#  model_path ${model_dir}/model_last.pth.tar \
-#  2>&1 | tee -a ${exp_dir}/test_last-$now.log
+# # TEST
+# #rm -rf /dev/shm/wbhu*
+# now=$(date +"%Y%m%d_%H%M%S")
+# #$PYTHON -u ${exp_dir}/${TEST_CODE} \
+# #  --config=${config} \
+# #  save_folder ${result_dir}/last \
+# #  model_path ${model_dir}/model_last.pth.tar \
+# #  2>&1 | tee -a ${exp_dir}/test_last-$now.log
 
 $PYTHON -u ${exp_dir}/${TEST_CODE} \
   --config=${config} \

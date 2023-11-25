@@ -36,18 +36,21 @@ def f(fn):
     print(fn, fn2)
 
 
-files = sorted(glob.glob('PATH_OF_TRAIN/*_vh_clean_2.ply'))
-files2 = sorted(glob.glob('PATH_OF_TRAIN/*_vh_clean_2.labels.ply'))
-assert len(files) == len(files2)
+# files = sorted(glob.glob('PATH_OF_TRAIN/*_vh_clean_2.ply'))
+# files2 = sorted(glob.glob('PATH_OF_TRAIN/*_vh_clean_2.labels.ply'))
+# assert len(files) == len(files2)
 
-p = mp.Pool(processes=mp.cpu_count())
-p.map(f, files)
-p.close()
-p.join()
+# p = mp.Pool(processes=mp.cpu_count())
+# p.map(f, files)
+# p.close()
+# p.join()
 
-files = sorted(glob.glob('PATH_OF_VAL/*_vh_clean_2.ply'))
-files2 = sorted(glob.glob('PATH_OF_VAL/*_vh_clean_2.labels.ply'))
-assert len(files) == len(files2)
+val_scene = np.loadtxt('/home/jimmy15923/mnt/data/scannet/scannetv2_val.txt', dtype=str)
+
+# files = sorted(glob.glob('PATH_OF_VAL/*_vh_clean_2.ply'))
+files = sorted([glob.glob(f'/home/jimmy15923/mnt/data/scannet/scans/{x}/*_vh_clean_2.ply')[0] for x in val_scene])
+# files2 = sorted(glob.glob('PATH_OF_VAL/*_vh_clean_2.labels.ply'))
+# assert len(files) == len(files2)
 
 p = mp.Pool(processes=mp.cpu_count())
 p.map(f, files)

@@ -92,7 +92,7 @@ class Voxelizer:
                      (coords[:, 2] < (lim[2][1] + center[2])))
         return clip_inds
 
-    def voxelize(self, coords, feats, labels, center=None, link=None):
+    def voxelize(self, coords, feats, labels, segs, center=None, link=None):
         assert coords.shape[1] == 3 and coords.shape[0] == feats.shape[0] and coords.shape[0]
         if self.clip_bound is not None:
             trans_aug_ratio = np.zeros(3)
@@ -105,6 +105,7 @@ class Voxelizer:
                 coords, feats = coords[clip_inds], feats[clip_inds]
                 if labels is not None:
                     labels = labels[clip_inds]
+                    segs = segs[clip_inds]
 
         # Get rotation and scale
         M_v, M_r = self.get_transformation_matrix()
@@ -124,13 +125,13 @@ class Voxelizer:
         coords_aug = np.floor(coords_aug - min_coords)
 
         inds, inds_reconstruct = sparse_quantize(coords_aug, return_index=True)
-        coords_aug, feats, labels = coords_aug[inds], feats[inds], labels[inds]
+        coords_aug, feats, labels, segs = coords_aug[inds], feats[inds], labels[inds], segs[inds]
 
         # Normal rotation
         if feats.shape[1] > 6:
             feats[:, 3:6] = feats[:, 3:6] @ (M_r[:3, :3].T)
 
         if link is not None:
-            return coords_aug, feats, labels, np.array(inds_reconstruct), link[inds]
+            return coords_aug, feats, labels, segs, np.array(inds_reconstruct), link[inds]
 
-        return coords_aug, feats, labels, np.array(inds_reconstruct)
+        return coords_aug, feats, labels, segs, np.array(inds_reconstruct)

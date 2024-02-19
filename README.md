@@ -20,6 +20,19 @@ Download the ScanNet [here](https://github.com/ScanNet/ScanNet).
 
 - Donwload the unsupervised pre-computed supervoxel by [WYPR](https://github.com/facebookresearch/WyPR/blob/main/docs/RUNNING.md#shape-detection)
 
+The data sctructure should be like
+├── data_root
+│   ├── train
+│   │   ├── scene0000_00.pth
+│   │   ├── scene0000_01.pth
+│   │── val
+│   │   ├── scene0011_00.pth
+│   │   ├── scene0011_01.pth
+│   ├── 2D
+│   │   ├── scene0000_00
+│   │   |   ├── color
+│   │   |   ├── label
+
 
 
 ## Training

@@ -1,9 +1,12 @@
-# 2D-3D Interlaced Transformer for Point Cloud Segmentation with Scene-Level Supervision
-[[Paper]](https://openaccess.thecvf.com/content/ICCV2023/supplemental/Yang_2D-3D_Interlaced_Transformer_ICCV_2023_supplemental.pdf) [[Project page]](https://jimmy15923.github.io/mit_web/)
+# [ICCV'23] 2D-3D Interlaced Transformer for Point Cloud Segmentation with Scene-Level Supervision
+[[ArXiv](https://arxiv.org/abs/2310.12817)][[Project page](https://jimmy15923.github.io/mit_web/)][[Video](https://www.youtube.com/watch?v=32nvE73SmuY)][[Poster]()]
+[[Open Access](https://openaccess.thecvf.com/content/ICCV2023/html/Yang_2D-3D_Interlaced_Transformer_for_Point_Cloud_Segmentation_with_Scene-Level_Supervision_ICCV_2023_paper.html)]
 
 This repository is the implementation of our ICCV 2023 paper: **2D-3D Interlaced Transformer for Point Cloud Segmentation with Scene-Level Supervision**.
 
-[teaser](figure/MIT_teaser.png)
+<p align="center">
+<img src="figure/MIT_teaser.png?raw=true" width="70%">
+</p>
 
 ## Requirements
 Build the conda environment by

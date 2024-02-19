@@ -23,7 +23,9 @@ Download the ScanNet [here](https://github.com/ScanNet/ScanNet).
 
 - Donwload the unsupervised pre-computed supervoxel by [WYPR](https://github.com/facebookresearch/WyPR/blob/main/docs/RUNNING.md#shape-detection)
 
-The data sctructure should be like
+The data sctructure should be like:
+
+```text
 ├── data_root
 │   ├── train
 │   │   ├── scene0000_00.pth
@@ -35,7 +37,7 @@ The data sctructure should be like
 │   │   ├── scene0000_00
 │   │   |   ├── color
 │   │   |   ├── label
-
+```
 
 
 ## Training

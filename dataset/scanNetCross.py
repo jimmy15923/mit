@@ -1,15 +1,31 @@
-#!/usr/bin/env python
+import json
 import math
 import random
-import torch
-import numpy as np
-from os.path import join
 from glob import glob
-import SharedArray as SA
-import imageio
+from os.path import exists, join
 
-import dataset.augmentation_2d as t_2d
+import cv2
+import imageio
+import numpy as np
+import PIL
+import SharedArray as SA
+import tifffile
+import torch
+from torchvision import transforms
+from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from timm.data import create_transform
+from timm.data.transforms import RandomResizedCropAndInterpolation
+
+from tqdm import tqdm
 from dataset.scanNet3D import ScanNet3D
+from util.util import seg_to_onehot
+
+
+def sa_create(name, var):
+    x = SA.create(name, var.shape, dtype=var.dtype)
+    x[...] = var[...]
+    x.flags.writeable = False
+    return x
 
 
 # create camera intrinsics
@@ -71,12 +87,12 @@ class LinkCreator(object):
 
 
 class ScanNetCross(ScanNet3D):
-    VIEW_NUM = 3
     IMG_DIM = (320, 240)
 
     def __init__(self, dataPathPrefix='Data', voxelSize=0.05,
+                 n_views=64,
                  split='train', aug=False, memCacheInit=False,
-                 identifier=7791, loop=1,
+                 identifier=1233, loop=1,
                  data_aug_color_trans_ratio=0.1,
                  data_aug_color_jitter_std=0.05, data_aug_hue_max=0.5,
                  data_aug_saturation_max=0.2, eval_all=False,
@@ -91,14 +107,24 @@ class ScanNetCross(ScanNet3D):
                                            data_aug_saturation_max=data_aug_saturation_max,
                                            eval_all=eval_all)
         self.val_benchmark = val_benchmark
+        self.n_views = n_views
+        self.data_paths = sorted(glob(join(dataPathPrefix, split, '*.pth')))
         if self.val_benchmark:
             self.offset = 0
         # Prepare for 2D
         self.data2D_paths = []
-        for x in self.data_paths:
-            ps = glob(join(x[:-15].replace(split, '2D'), 'label', '*.png'))
-            assert len(ps) >= self.VIEW_NUM, '[!] %s has only %d frames, less than expected %d samples' % (
-                x, len(ps), self.VIEW_NUM)
+        for x in tqdm(self.data_paths):
+            # ps = glob(join(x[:-15].replace(split, '2D'), 'color', '*.jpg'))
+            # ps = glob(join(x[:-4].replace(split, '2D'), 'pose', '*.txt'))
+            ps = glob(join(x[:-4].replace(split, '2D'), 'coords', '*.tiff'))
+            if len(ps) < self.n_views:
+                print(f'{x} has only {len(ps)} frames, random appened')
+                append_views = np.random.choice(
+                    np.arange(len(ps)), self.n_views - len(ps), replace=True,
+                )
+                append_views = np.array(ps)[append_views].tolist()
+                ps.extend(append_views)
+
             ps.sort(key=lambda x: int(x.split('/')[-1].split('.')[0]))
             if val_benchmark:
                 ps = ps[::5]
@@ -108,51 +134,48 @@ class ScanNetCross(ScanNet3D):
         for i, x in enumerate([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 24, 28, 33, 34, 36, 39]):
             self.remapper[x] = i
 
-        self.linkCreator = LinkCreator(image_dim=self.IMG_DIM, voxelSize=voxelSize)
-        # 2D AUG
-        value_scale = 255
-        mean = [0.485, 0.456, 0.406]
-        mean = [item * value_scale for item in mean]
-        std = [0.229, 0.224, 0.225]
-        std = [item * value_scale for item in std]
-        if self.aug:
-            self.transform_2d = t_2d.Compose([
-                t_2d.RandomGaussianBlur(),
-                t_2d.Crop([self.IMG_DIM[1] + 1, self.IMG_DIM[0] + 1], crop_type='rand', padding=mean,
-                          ignore_label=255),
-                t_2d.ToTensor(),
-                t_2d.Normalize(mean=mean, std=std)])
-        else:
-            self.transform_2d = t_2d.Compose([
-                t_2d.Crop([self.IMG_DIM[1] + 1, self.IMG_DIM[0] + 1], crop_type='rand', padding=mean,
-                          ignore_label=255),
-                t_2d.ToTensor(),
-                t_2d.Normalize(mean=mean, std=std)])
+
+        transform = create_transform(
+            input_size=256,
+            is_training=True,
+        )
+        transform.transforms[0] = RandomResizedCropAndInterpolation(size=224, scale=(0.9, 1.5))
+
+        t = []
+        t.append(transforms.ToTensor())
+        t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
+
+        self.transform_2d = transforms.Compose(t)
+
 
     def __getitem__(self, index_long):
         index = index_long % len(self.data_paths)
-        locs_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_locs_%08d" % (self.split, self.identifier, index))
-        feats_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_feats_%08d" % (self.split, self.identifier, index))
-        labels_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_labels_%08d" % (self.split, self.identifier, index))
-
-        colors, labels_2d, links = self.get_2d(index, locs_in)
+        locs_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_locs_%08d" % (self.split, self.identifier, index)).copy()
+        feats_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_feats_%08d" % (self.split, self.identifier, index)).copy()
+        labels_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_labels_%08d" % (self.split, self.identifier, index)).copy()
+        segs_in = SA.attach("shm://wbhu_scannet_3d_%s_%06d_segs_%08d" % (self.split, self.identifier, index)).copy()
 
         locs = self.prevoxel_transforms(locs_in) if self.aug else locs_in
-        locs, feats, labels, inds_reconstruct, links = self.voxelizer.voxelize(locs, feats_in, labels_in, link=links)
+        locs, feats, labels, segs, inds_reconstruct = self.voxelizer.voxelize(locs, feats_in, labels_in, segs_in)
+
+        colors, labels_2d, poses = self.get_2d(index)
         if self.eval_all:
             labels = labels_in
         if self.aug:
-            locs, feats, labels = self.input_transforms(locs, feats, labels)
+            locs, feats, labels, segs = self.input_transforms(locs, feats, labels, segs)
+
         coords = torch.from_numpy(locs).int()
         coords = torch.cat((torch.ones(coords.shape[0], 1, dtype=torch.int), coords), dim=1)
         feats = torch.from_numpy(feats).float() / 127.5 - 1.
         labels = torch.from_numpy(labels).long()
-
+        segs = torch.from_numpy(segs).long()
+    
         if self.eval_all:
-            return coords, feats, labels, colors, labels_2d, links, torch.from_numpy(inds_reconstruct).long()
-        return coords, feats, labels, colors, labels_2d, links
+            return coords, feats, labels, segs, colors, poses, torch.from_numpy(inds_reconstruct).long()
+        return coords, feats, labels, segs, colors, poses, labels_2d
 
-    def get_2d(self, room_id, coords: np.ndarray):
+
+    def get_2d(self, room_id, coords=None):
         """
         :param      room_id:
         :param      coords: Nx3
@@ -161,38 +184,38 @@ class ScanNetCross(ScanNet3D):
                     links: Nx4xV(1,H,W,mask) Tensor
         """
         frames_path = self.data2D_paths[room_id]
-        partial = int(len(frames_path) / self.VIEW_NUM)
-        imgs, labels, links = [], [], []
-        for v in range(self.VIEW_NUM):
+        partial = int(len(frames_path) / self.n_views)
+        imgs, labels, world_coords = [], [], []
+
+        for v in range(self.n_views):
             if not self.val_benchmark:
                 f = random.sample(frames_path[v * partial:v * partial + partial], k=1)[0]
             else:
                 select_id = (v * partial+self.offset) % len(frames_path)
-                # select_id = (v * partial+partial//2)
                 f = frames_path[select_id]
-            # pdb.set_trace()
-            img = imageio.imread(f.replace('label', 'color').replace('.png', '.jpg'))
-            label = imageio.imread(f)
+
+            # In ICCV version, we do not use 2D poses information, you can skip the loading of coords by modifing the dataloader and collate_fn
+            img = PIL.Image.open(f.replace('coords', 'color').replace('.tiff', '.jpg')).convert("RGB")
+            coords = tifffile.imread(f)
+            label = imageio.imread(f.replace('coords', 'label').replace('.tiff', '.png'))
             label = self.remapper[label]
-            depth = imageio.imread(f.replace('label', 'depth')) / 1000.0  # convert to meter
-            posePath = f.replace('label', 'pose').replace('.png', '.txt')
-            pose = np.asarray(
-                [[float(x[0]), float(x[1]), float(x[2]), float(x[3])] for x in
-                 (x.split(" ") for x in open(posePath).read().splitlines())]
-            )
-            # pdb.set_trace()
-            link = np.ones([coords.shape[0], 4], dtype=np.int)
-            link[:, 1:4] = self.linkCreator.computeLinking(pose, coords, depth)
-            img, label = self.transform_2d(img, label)
+            onehot = np.zeros(20)
+            for x in np.unique(label):
+                if x != 255:
+                    onehot[int(x)] = 1
+            label_2d = torch.from_numpy(onehot).long()
+
+            img = self.transform_2d(img)
             imgs.append(img)
-            labels.append(label)
-            links.append(link)
+            world_coords.append(np.mean(coords, axis=(0, 1)))
+            labels.append(label_2d)
 
         imgs = torch.stack(imgs, dim=-1)
-        labels = torch.stack(labels, dim=-1)
-        links = np.stack(links, axis=-1)
-        links = torch.from_numpy(links)
-        return imgs, labels, links
+        labels = torch.stack(labels, dim=0)
+        world_coords = torch.from_numpy(np.array(world_coords))
+
+        return imgs, labels, world_coords
+
 
 
 def collation_fn(batch):
@@ -204,17 +227,16 @@ def collation_fn(batch):
                 colors: B x C x H x W x V
                 labels_2d:  B x H x W x V
                 links:  N x 4 x V (B,H,W,mask)
-
     """
-    coords, feats, labels, colors, labels_2d, links = list(zip(*batch))
+    coords, feats, labels, segs, colors, links, labels_2d = list(zip(*batch))
     # pdb.set_trace()
 
     for i in range(len(coords)):
         coords[i][:, 0] *= i
-        links[i][:, 0, :] *= i
 
-    return torch.cat(coords), torch.cat(feats), torch.cat(labels), \
-           torch.stack(colors), torch.stack(labels_2d), torch.cat(links)
+    return torch.cat(coords), torch.cat(feats), labels, segs, \
+           torch.stack(colors), torch.stack(links), torch.stack(labels_2d)
+
 
 
 def collation_fn_eval_all(batch):
@@ -227,25 +249,26 @@ def collation_fn_eval_all(batch):
                 labels_2d:  B x H x W x V
                 links:  N x 4 x V (B,H,W,mask)
                 inds_recons:ON
-
     """
-    coords, feats, labels, colors, labels_2d, links, inds_recons = list(zip(*batch))
+    coords, feats, labels, segs, colors, links, inds_recons = list(zip(*batch))
     inds_recons = list(inds_recons)
     # pdb.set_trace()
 
     accmulate_points_num = 0
     for i in range(len(coords)):
         coords[i][:, 0] *= i
-        links[i][:, 0, :] *= i
         inds_recons[i] = accmulate_points_num + inds_recons[i]
         accmulate_points_num += coords[i].shape[0]
 
-    return torch.cat(coords), torch.cat(feats), torch.cat(labels), \
-           torch.stack(colors), torch.stack(labels_2d), torch.cat(links), torch.cat(inds_recons)
+    return torch.cat(coords), torch.cat(feats), labels, segs, \
+           torch.stack(colors), torch.stack(links), torch.cat(inds_recons)
+
+
 
 
 if __name__ == '__main__':
     import time
+
     from tensorboardX import SummaryWriter
 
     data_root = '/research/dept6/wbhu/Dataset/ScanNet'

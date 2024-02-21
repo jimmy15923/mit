@@ -24,11 +24,11 @@ class ChromaticTranslation(object):
         """
         self.trans_range_ratio = trans_range_ratio
 
-    def __call__(self, coords, feats, labels):
+    def __call__(self, coords, feats, labels, segs):
         if random.random() < 0.95:
             tr = (np.random.rand(1, 3) - 0.5) * 255 * 2 * self.trans_range_ratio
             feats[:, :3] = np.clip(tr + feats[:, :3], 0, 255)
-        return coords, feats, labels
+        return coords, feats, labels, segs
 
 
 class ChromaticAutoContrast(object):
@@ -37,7 +37,7 @@ class ChromaticAutoContrast(object):
         self.randomize_blend_factor = randomize_blend_factor
         self.blend_factor = blend_factor
 
-    def __call__(self, coords, feats, labels):
+    def __call__(self, coords, feats, labels, segs):
         if random.random() < 0.2:
             # mean = np.mean(feats, 0, keepdims=True)
             # std = np.std(feats, 0, keepdims=True)
@@ -52,7 +52,7 @@ class ChromaticAutoContrast(object):
 
             blend_factor = random.random() if self.randomize_blend_factor else self.blend_factor
             feats = (1 - blend_factor) * feats + blend_factor * contrast_feats
-        return coords, feats, labels
+        return coords, feats, labels, segs
 
 
 class ChromaticJitter(object):
@@ -60,12 +60,12 @@ class ChromaticJitter(object):
     def __init__(self, std=0.01):
         self.std = std
 
-    def __call__(self, coords, feats, labels):
+    def __call__(self, coords, feats, labels, segs):
         if random.random() < 0.95:
             noise = np.random.randn(feats.shape[0], 3)
             noise *= self.std * 255
             feats[:, :3] = np.clip(noise + feats[:, :3], 0, 255)
-        return coords, feats, labels
+        return coords, feats, labels, segs
 
 
 class HueSaturationTranslation(object):
@@ -120,7 +120,7 @@ class HueSaturationTranslation(object):
         self.hue_max = hue_max
         self.saturation_max = saturation_max
 
-    def __call__(self, coords, feats, labels):
+    def __call__(self, coords, feats, labels, segs):
         # Assume feat[:, :3] is rgb
         hsv = HueSaturationTranslation.rgb_to_hsv(feats[:, :3])
         hue_val = (random.random() - 0.5) * 2 * self.hue_max
@@ -129,7 +129,7 @@ class HueSaturationTranslation(object):
         hsv[..., 1] = np.clip(sat_ratio * hsv[..., 1], 0, 1)
         feats[:, :3] = np.clip(HueSaturationTranslation.hsv_to_rgb(hsv), 0, 255)
 
-        return coords, feats, labels
+        return coords, feats, labels, segs
 
 
 ##############################
@@ -147,13 +147,13 @@ class RandomHorizontalFlip(object):
         # Use the rest of axes for flipping.
         self.horz_axes = set(range(self.D)) - set([self.upright_axis])
 
-    def __call__(self, coords, feats, labels):
+    def __call__(self, coords, feats, labels, segs):
         if random.random() < 0.95:
             for curr_ax in self.horz_axes:
                 if random.random() < 0.5:
                     coord_max = np.max(coords[:, curr_ax])
                     coords[:, curr_ax] = coord_max - coords[:, curr_ax]
-        return coords, feats, labels
+        return coords, feats, labels, segs
 
 
 class ElasticDistortion:
